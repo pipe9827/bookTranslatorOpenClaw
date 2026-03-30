@@ -1,8 +1,10 @@
 name: translate_book
 description: >
   Translates technical textbook chapters from Spanish into academic British
-  English using a two-pass LLM pipeline (translation + editorial review).
-  Maintains a shared terminology glossary to ensure consistency across files.
+  English using a multi-pass LLM pipeline (translation + editorial review +
+  terminology extraction). Uses a shared terminology glossary to enforce
+  consistency across files and preserve stable technical terminology
+  throughout the translation process.
 
 version: "1.0.0"
 
@@ -11,61 +13,94 @@ inputs:
     type: directory
     description: >
       Directory containing the Markdown (.md) source files to be translated.
-    default: skills/translate_book/input
+    default: input
 
   - name: output_directory
     type: directory
     description: >
       Directory where translated Markdown files will be saved.
-    default: skills/translate_book/output
+    default: output
 
   - name: terminology_file
     type: file
     description: >
-      Markdown file that stores the Spanish-to-English glossary used to enforce
-      terminology consistency.
-    default: skills/translate_book/memory/terminology.md
+      Markdown file storing the official Spanish-to-English glossary used to
+      enforce terminology consistency across translations.
+    default: memory/terminology.md
+
+  - name: terminology_candidates_file
+    type: file
+    description: >
+      Markdown file storing candidate terminology pairs extracted by the agent
+      for later review before promotion to the official glossary.
+    default: memory/terminology_candidates.md
 
   - name: translate_prompt
     type: file
-    description: Prompt template for the first-pass (translation) LLM call.
-    default: skills/translate_book/prompts/translate.md
+    description: >
+      Prompt template used for the first-pass translation LLM call.
+    default: prompts/translate.md
 
   - name: review_prompt
     type: file
-    description: Prompt template for the second-pass (review) LLM call.
-    default: skills/translate_book/prompts/review.md
+    description: >
+      Prompt template used for the second-pass editorial review LLM call.
+    default: prompts/review.md
+
+  - name: extract_terminology_prompt
+    type: file
+    description: >
+      Prompt template used for extracting candidate terminology pairs from the
+      Spanish source text and reviewed English translation.
+    default: prompts/extract_terminology.md
 
 steps:
   - id: load_glossary
     description: >
-      Load the current terminology glossary from the memory file.  Returns a
-      mapping of Spanish terms to their established English equivalents.
+      Load the current official terminology glossary from the memory file and
+      make it available for prompt injection during translation, review, and
+      terminology extraction.
 
   - id: discover_files
     description: >
-      Scan the input directory and collect all .md files sorted alphabetically.
+      Scan the input directory and collect all Markdown (.md) files, sorted
+      alphabetically for deterministic processing.
 
   - id: translate_pass
     description: >
-      For each source file, inject the content into the translation prompt
-      template (replacing {{BOOK_TEXT}} and {{TERMINOLOGY}}) and call the LLM
-      to produce a first-pass English translation.
+      For each source file, inject the source content into the translation
+      prompt template by replacing {{BOOK_TEXT}} and inject the glossary by
+      replacing {{TERMINOLOGY}}, then call the LLM to produce a first-pass
+      English translation.
 
   - id: review_pass
     description: >
-      Inject the first-pass translation into the review prompt template
-      (replacing {{TRANSLATED_TEXT}} and {{TERMINOLOGY}}) and call the LLM
-      again for an editorial review that enforces academic tone, British
-      spelling, and terminology consistency.
+      Inject the first-pass translation into the review prompt template by
+      replacing {{TRANSLATED_TEXT}} and inject the glossary by replacing
+      {{TERMINOLOGY}}, then call the LLM again for an editorial review that
+      enforces academic tone, British English, structural preservation, and
+      terminology consistency.
+
+  - id: extract_terminology
+    description: >
+      After the reviewed translation is produced, inject the original Spanish
+      source text, the reviewed English translation, and the official glossary
+      into the terminology extraction prompt. Call the LLM to produce candidate
+      terminology pairs in Markdown table format.
 
   - id: save_output
     description: >
       Write the reviewed translation to the output directory using the naming
       convention <original_stem>_translated.md.
 
-  - id: update_glossary
+  - id: store_terminology_candidates
     description: >
-      Scan the translated output for bilingual glosses and append any newly
-      detected terms to the terminology file, making them available for
-      subsequent files in the same run.
+      Append newly extracted candidate terminology pairs to the terminology
+      candidates file, avoiding duplicates and keeping the official glossary
+      separate from unreviewed proposals.
+
+  - id: maintain_glossary
+    description: >
+      Preserve and reuse the official terminology glossary across files.
+      Candidate terminology should be reviewed before being promoted into the
+      official glossary.

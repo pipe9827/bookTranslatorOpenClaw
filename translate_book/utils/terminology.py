@@ -1,76 +1,100 @@
-"""Terminology memory utilities for maintaining glossary consistency."""
+"""Terminology memory utilities for glossary loading and candidate extraction."""
 
-import re
 from pathlib import Path
+import re
 
-TERMINOLOGY_PATH = Path(__file__).parent.parent / "memory" / "terminology.md"
+MEMORY_DIR = Path(__file__).parent.parent / "memory"
+TERMINOLOGY_PATH = MEMORY_DIR / "terminology.md"
+CANDIDATES_PATH = MEMORY_DIR / "terminology_candidates.md"
 
-# Matches lines of the form: | Spanish term | English term | ... |
 _TABLE_ROW_RE = re.compile(
-    r"^\|\s*(?P<source>[^|]+?)\s*\|\s*(?P<target>[^|]+?)\s*\|"
+    r"^\|\s*(?P<source>[^|]+?)\s*\|\s*(?P<target>[^|]+?)\s*\|\s*(?P<notes>[^|]*?)\s*\|?$"
 )
 
 
-def load_terminology() -> dict[str, str]:
-    """Load the terminology glossary from the memory file.
+def _normalise(text: str) -> str:
+    """Normalise text for duplicate comparison."""
+    return " ".join(text.strip().split()).lower()
 
-    Returns:
-        A mapping of source (Spanish) terms to their established English
-        translations.  Returns an empty dict if the file does not exist or
-        contains no table rows.
-    """
-    if not TERMINOLOGY_PATH.exists():
+
+def _parse_markdown_table(path: Path) -> dict[str, str]:
+    """Parse a glossary Markdown table into a source->target mapping."""
+    if not path.exists():
         return {}
 
     glossary: dict[str, str] = {}
-    for line in TERMINOLOGY_PATH.read_text(encoding="utf-8").splitlines():
-        match = _TABLE_ROW_RE.match(line)
-        if match:
-            source = match.group("source").strip()
-            target = match.group("target").strip()
-            # Skip header/separator rows
-            if source.lower() in ("spanish", "---", "term", "") or target.startswith("-"):
-                continue
-            glossary[source] = target
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = _TABLE_ROW_RE.match(line.strip())
+        if not match:
+            continue
+
+        source = match.group("source").strip()
+        target = match.group("target").strip()
+
+        if _normalise(source) in {"spanish", "---", ""}:
+            continue
+        if _normalise(target) in {"english", "---", ""}:
+            continue
+
+        glossary[source] = target
+
     return glossary
 
 
-def update_terminology(source_text: str, translated_text: str) -> None:
-    """Detect potential new terms and append them to the glossary.
+def load_terminology() -> dict[str, str]:
+    """Load the official glossary."""
+    return _parse_markdown_table(TERMINOLOGY_PATH)
 
-    The function performs a lightweight heuristic scan: it looks for
-    parenthetical glosses of the form ``término (term)`` in the translated
-    text, where the word inside the parentheses is English and the preceding
-    word is the Spanish original.  Any pair that is not already present in the
-    glossary is appended as a new table row.
 
-    Args:
-        source_text: Original Spanish text.
-        translated_text: Translated English text.
-    """
-    existing = load_terminology()
+def load_terminology_candidates() -> dict[str, str]:
+    """Load candidate glossary entries."""
+    return _parse_markdown_table(CANDIDATES_PATH)
 
-    # Heuristic: capture patterns like "word (Word)" that suggest a bilingual
-    # gloss introduced by the translator.
-    pattern = re.compile(r"(\b[A-Za-zÀ-ÿ]+\b)\s+\(([A-Za-z][A-Za-z\s\-]+?)\)")
-    new_terms: dict[str, str] = {}
-    for match in pattern.finditer(translated_text):
-        spanish_candidate = match.group(1)
-        english_candidate = match.group(2).strip()
-        if spanish_candidate not in existing and spanish_candidate not in new_terms:
-            new_terms[spanish_candidate] = english_candidate
 
-    if not new_terms:
+def append_terminology_candidates(candidates_markdown: str) -> None:
+    """Append extracted candidate rows to terminology_candidates.md."""
+    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+
+    if not CANDIDATES_PATH.exists():
+        CANDIDATES_PATH.write_text(
+            "# Terminology Candidates\n\n"
+            "| Spanish | English | Notes |\n"
+            "|---------|---------|-------|\n",
+            encoding="utf-8",
+        )
+
+    existing = load_terminology_candidates()
+    official = load_terminology()
+
+    existing_keys = {_normalise(key) for key in existing}
+    official_keys = {_normalise(key) for key in official}
+
+    rows_to_add: list[str] = []
+
+    for line in candidates_markdown.splitlines():
+        match = _TABLE_ROW_RE.match(line.strip())
+        if not match:
+            continue
+
+        source = " ".join(match.group("source").strip().split())
+        target = " ".join(match.group("target").strip().split())
+        notes = " ".join(match.group("notes").strip().split())
+
+        if _normalise(source) in {"spanish", "---", ""}:
+            continue
+        if _normalise(target) in {"english", "---", ""}:
+            continue
+
+        normalised_source = _normalise(source)
+        if normalised_source in official_keys or normalised_source in existing_keys:
+            continue
+
+        rows_to_add.append(f"| {source} | {target} | {notes or 'Candidate'} |")
+        existing_keys.add(normalised_source)
+
+    if not rows_to_add:
         return
 
-    current_content = (
-        TERMINOLOGY_PATH.read_text(encoding="utf-8")
-        if TERMINOLOGY_PATH.exists()
-        else ""
-    )
-    rows = "\n".join(
-        f"| {src} | {tgt} | Auto-detected |"
-        for src, tgt in new_terms.items()
-    )
-    updated_content = current_content.rstrip("\n") + "\n" + rows + "\n"
-    TERMINOLOGY_PATH.write_text(updated_content, encoding="utf-8")
+    current = CANDIDATES_PATH.read_text(encoding="utf-8").rstrip() + "\n"
+    current += "\n".join(rows_to_add) + "\n"
+    CANDIDATES_PATH.write_text(current, encoding="utf-8")

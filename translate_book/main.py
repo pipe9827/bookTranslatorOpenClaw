@@ -8,8 +8,11 @@ This module orchestrates the full translation workflow:
    translation.
 4. Build a review prompt using the template in ``prompts/review.md``.
 5. Call the LLM again for an editorial review pass.
-6. Save the final translation to ``output/``.
-7. Update the terminology memory with any newly detected terms.
+6. Build a terminology extraction prompt using
+   ``prompts/extract_terminology.md``.
+7. Call the LLM again to extract candidate terminology pairs.
+8. Save the final translation to ``output/``.
+9. Save terminology candidates to ``memory/terminology_candidates.md``.
 
 Usage::
 
@@ -18,7 +21,7 @@ Usage::
 Environment variables
 ---------------------
 OPENAI_API_KEY : str, optional
-    Required only when using the real OpenAI backend.  The default
+    Required only when using the real OpenAI backend. The default
     implementation is a no-op placeholder.
 """
 
@@ -53,11 +56,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Local imports (after path setup so relative imports resolve correctly)
+# Local imports
 # ---------------------------------------------------------------------------
 
 from utils.file_manager import read_file, write_file  # noqa: E402
-from utils.terminology import load_terminology, update_terminology  # noqa: E402
+from utils.terminology import (  # noqa: E402
+    load_terminology,
+    append_terminology_candidates,
+)
 
 # ---------------------------------------------------------------------------
 # LLM abstraction
@@ -67,11 +73,14 @@ from utils.terminology import load_terminology, update_terminology  # noqa: E402
 def call_llm(prompt: str) -> str:
     """Send a prompt to the configured LLM and return the response.
 
-    This is a **placeholder** implementation.  Replace the body with a real
-    API call, for example::
+    This is a placeholder implementation. Replace the body with a real
+    API call when you connect your model provider.
 
-        import openai
-        client = openai.OpenAI()  # reads OPENAI_API_KEY from environment
+    Example::
+
+        from openai import OpenAI
+
+        client = OpenAI()
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[{"role": "user", "content": prompt}],
@@ -84,13 +93,12 @@ def call_llm(prompt: str) -> str:
     Returns:
         The model's text response.
     """
-    # --- Replace this stub with a real LLM call ---
     logger.warning(
         "call_llm() is using the placeholder implementation. "
         "No actual API call was made."
     )
     return (
-        "[PLACEHOLDER TRANSLATION — integrate a real LLM to obtain output]\n\n"
+        "[PLACEHOLDER OUTPUT — integrate a real LLM to obtain output]\n\n"
         + prompt[:200]
         + "\n..."
     )
@@ -112,7 +120,7 @@ def _build_terminology_block(glossary: dict[str, str]) -> str:
         glossary is empty.
     """
     if not glossary:
-        return "_No established terminology yet._"
+        return "| Spanish | English |\n|---------|---------|"
 
     rows = ["| Spanish | English |", "|---------|---------|"]
     rows.extend(f"| {src} | {tgt} |" for src, tgt in glossary.items())
@@ -124,13 +132,10 @@ def build_translate_prompt(book_text: str, glossary: dict[str, str]) -> str:
 
     Args:
         book_text: Raw Markdown source text in Spanish.
-        glossary: Current terminology glossary.
+        glossary: Current official terminology glossary.
 
     Returns:
         The fully rendered prompt string ready to be sent to the LLM.
-
-    Raises:
-        FileNotFoundError: If ``prompts/translate.md`` does not exist.
     """
     template = read_file(PROMPTS_DIR / "translate.md")
     terminology_block = _build_terminology_block(glossary)
@@ -144,17 +149,37 @@ def build_review_prompt(translated_text: str, glossary: dict[str, str]) -> str:
 
     Args:
         translated_text: First-pass English translation in Markdown format.
-        glossary: Current terminology glossary.
+        glossary: Current official terminology glossary.
 
     Returns:
         The fully rendered prompt string ready to be sent to the LLM.
-
-    Raises:
-        FileNotFoundError: If ``prompts/review.md`` does not exist.
     """
     template = read_file(PROMPTS_DIR / "review.md")
     terminology_block = _build_terminology_block(glossary)
     prompt = template.replace("{{TRANSLATED_TEXT}}", translated_text)
+    prompt = prompt.replace("{{TERMINOLOGY}}", terminology_block)
+    return prompt
+
+
+def build_extract_terminology_prompt(
+    source_text: str,
+    translated_text: str,
+    glossary: dict[str, str],
+) -> str:
+    """Construct the terminology extraction prompt from the template.
+
+    Args:
+        source_text: Original Spanish source text.
+        translated_text: Final reviewed English translation.
+        glossary: Current official terminology glossary.
+
+    Returns:
+        The fully rendered prompt string ready to be sent to the LLM.
+    """
+    template = read_file(PROMPTS_DIR / "extract_terminology.md")
+    terminology_block = _build_terminology_block(glossary)
+    prompt = template.replace("{{SOURCE_TEXT}}", source_text)
+    prompt = prompt.replace("{{TRANSLATED_TEXT}}", translated_text)
     prompt = prompt.replace("{{TERMINOLOGY}}", terminology_block)
     return prompt
 
@@ -164,8 +189,8 @@ def build_review_prompt(translated_text: str, glossary: dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def translate_file(source_path: Path, glossary: dict[str, str]) -> str:
-    """Run the two-pass translation pipeline for a single file.
+def translate_file(source_path: Path, glossary: dict[str, str]) -> tuple[str, str, str]:
+    """Run translation, review, and terminology extraction for a single file.
 
     Pass 1 — Translation:
         Inject the source text into the translation prompt and call the LLM.
@@ -174,42 +199,58 @@ def translate_file(source_path: Path, glossary: dict[str, str]) -> str:
         Inject the first-pass translation into the review prompt and call the
         LLM to obtain the final, polished translation.
 
+    Pass 3 — Terminology extraction:
+        Inject the original source text and final reviewed translation into the
+        extraction prompt and call the LLM to obtain candidate terminology
+        pairs in Markdown table format.
+
     Args:
         source_path: Path to the source ``.md`` file.
-        glossary: Current terminology glossary (may be empty).
+        glossary: Current official terminology glossary.
 
     Returns:
-        The reviewed, final English translation as a string.
-
-    Raises:
-        OSError: If the source file cannot be read.
+        A tuple containing:
+        - original Spanish source text
+        - final reviewed English translation
+        - extracted candidate terminology in Markdown table format
     """
     logger.info("Reading source file: %s", source_path)
     book_text = read_file(source_path)
 
-    # --- Pass 1: Translation ---
+    # Pass 1 — Translation
     logger.info("Pass 1 — Translation: %s", source_path.name)
     translate_prompt = build_translate_prompt(book_text, glossary)
     translated_text = call_llm(translate_prompt)
     logger.info("Pass 1 complete for: %s", source_path.name)
 
-    # --- Pass 2: Review ---
+    # Pass 2 — Review
     logger.info("Pass 2 — Review: %s", source_path.name)
     review_prompt = build_review_prompt(translated_text, glossary)
     reviewed_text = call_llm(review_prompt)
     logger.info("Pass 2 complete for: %s", source_path.name)
 
-    return reviewed_text
+    # Pass 3 — Terminology extraction
+    logger.info("Pass 3 — Terminology extraction: %s", source_path.name)
+    extract_prompt = build_extract_terminology_prompt(
+        book_text,
+        reviewed_text,
+        glossary,
+    )
+    candidates_markdown = call_llm(extract_prompt)
+    logger.info("Pass 3 complete for: %s", source_path.name)
+
+    return book_text, reviewed_text, candidates_markdown
 
 
 def run_pipeline() -> None:
     """Execute the translation pipeline for all ``.md`` files in ``input/``.
 
     For each file:
-
-    * Translates and reviews the content.
-    * Saves the result to ``output/<stem>_translated.md``.
-    * Updates the terminology glossary.
+    - Translate the content
+    - Review the translation
+    - Extract candidate terminology
+    - Save the final translation to ``output/<stem>_translated.md``
+    - Append terminology candidates to ``memory/terminology_candidates.md``
 
     Errors for individual files are logged and do not abort the pipeline.
     """
@@ -221,28 +262,34 @@ def run_pipeline() -> None:
     logger.info("Starting translation pipeline. Files to process: %d", len(input_files))
 
     glossary = load_terminology()
-    logger.info("Loaded %d terminology entries.", len(glossary))
+    logger.info("Loaded %d official terminology entries.", len(glossary))
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     for source_path in input_files:
         try:
-            reviewed_text = translate_file(source_path, glossary)
+            original_text, reviewed_text, candidates_markdown = translate_file(
+                source_path,
+                glossary,
+            )
 
             output_filename = source_path.stem + "_translated.md"
             output_path = OUTPUT_DIR / output_filename
             write_file(output_path, reviewed_text)
             logger.info("Saved translation: %s", output_path)
 
-            # Update terminology after each file so subsequent files benefit
-            original_text = read_file(source_path)
-            update_terminology(original_text, reviewed_text)
-            # Reload glossary to pick up any newly added terms
+            append_terminology_candidates(candidates_markdown)
+            logger.info("Updated terminology candidates for: %s", source_path.name)
+
+            # Reload official glossary in case it was manually updated between runs
             glossary = load_terminology()
 
         except Exception as exc:  # noqa: BLE001
             logger.error(
-                "Failed to translate '%s': %s", source_path.name, exc, exc_info=True
+                "Failed to process '%s': %s",
+                source_path.name,
+                exc,
+                exc_info=True,
             )
 
     logger.info("Pipeline finished.")
