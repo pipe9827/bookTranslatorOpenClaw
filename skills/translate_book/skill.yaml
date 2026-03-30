@@ -1,0 +1,71 @@
+name: translate_book
+description: >
+  Translates technical book chapters from Spanish to academic British English
+  using an LLM-backed two-pass pipeline (translation + review).  Maintains a
+  persistent terminology glossary to ensure consistency across chapters.
+
+inputs:
+  - name: input_directory
+    description: Directory containing the Markdown (.md) chapter files to translate.
+    required: true
+    default: skills/translate_book/input
+
+  - name: output_directory
+    description: Directory where translated Markdown files will be written.
+    required: false
+    default: skills/translate_book/output
+
+  - name: terminology_path
+    description: Path to the terminology glossary Markdown file.
+    required: false
+    default: skills/translate_book/memory/terminology.md
+
+  - name: llm_model
+    description: >
+      Identifier of the LLM to use for translation and review
+      (e.g. "gpt-4o", "claude-3-5-sonnet").  Passed to call_llm().
+    required: false
+    default: gpt-4o
+
+steps:
+  - id: load_prompts
+    description: >
+      Read translate.md and review.md from the prompts/ directory into memory.
+
+  - id: load_terminology
+    description: >
+      Parse memory/terminology.md and build an in-memory Spanish→English
+      glossary dictionary.
+
+  - id: discover_inputs
+    description: >
+      Scan the input/ directory for all .md files and sort them
+      alphabetically to ensure deterministic processing order.
+
+  - id: translate
+    description: >
+      For each chapter file: render the translate.md prompt with the chapter
+      content ({{BOOK_TEXT}}) and the current glossary ({{TERMINOLOGY}}),
+      then call the LLM to produce a first-pass English translation.
+
+  - id: review
+    description: >
+      For each chapter file: render the review.md prompt with the original
+      Spanish text ({{BOOK_TEXT}}), the first-pass translation
+      ({{TRANSLATED_TEXT}}), and the glossary ({{TERMINOLOGY}}), then call
+      the LLM to produce the final, reviewed translation.
+
+  - id: save_output
+    description: >
+      Write the reviewed translation to output/<stem>_translated.md,
+      creating the output directory if it does not exist.
+
+  - id: update_terminology
+    description: >
+      Scan the source and translated texts for new technical terms and
+      append any previously unseen Spanish→English pairs to terminology.md.
+
+  - id: log_completion
+    description: >
+      Record the processing result (success or error) for each file in
+      logs/execution.log.

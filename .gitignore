@@ -205,3 +205,10 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Translation pipeline — runtime artefacts
+skills/translate_book/logs/*.log
+skills/translate_book/output/*
+!skills/translate_book/output/.gitkeep
+skills/translate_book/input/*
+!skills/translate_book/input/chapter1.md
