@@ -1,0 +1,71 @@
+name: translate_book
+description: >
+  Translates technical textbook chapters from Spanish into academic British
+  English using a two-pass LLM pipeline (translation + editorial review).
+  Maintains a shared terminology glossary to ensure consistency across files.
+
+version: "1.0.0"
+
+inputs:
+  - name: input_directory
+    type: directory
+    description: >
+      Directory containing the Markdown (.md) source files to be translated.
+    default: skills/translate_book/input
+
+  - name: output_directory
+    type: directory
+    description: >
+      Directory where translated Markdown files will be saved.
+    default: skills/translate_book/output
+
+  - name: terminology_file
+    type: file
+    description: >
+      Markdown file that stores the Spanish-to-English glossary used to enforce
+      terminology consistency.
+    default: skills/translate_book/memory/terminology.md
+
+  - name: translate_prompt
+    type: file
+    description: Prompt template for the first-pass (translation) LLM call.
+    default: skills/translate_book/prompts/translate.md
+
+  - name: review_prompt
+    type: file
+    description: Prompt template for the second-pass (review) LLM call.
+    default: skills/translate_book/prompts/review.md
+
+steps:
+  - id: load_glossary
+    description: >
+      Load the current terminology glossary from the memory file.  Returns a
+      mapping of Spanish terms to their established English equivalents.
+
+  - id: discover_files
+    description: >
+      Scan the input directory and collect all .md files sorted alphabetically.
+
+  - id: translate_pass
+    description: >
+      For each source file, inject the content into the translation prompt
+      template (replacing {{BOOK_TEXT}} and {{TERMINOLOGY}}) and call the LLM
+      to produce a first-pass English translation.
+
+  - id: review_pass
+    description: >
+      Inject the first-pass translation into the review prompt template
+      (replacing {{TRANSLATED_TEXT}} and {{TERMINOLOGY}}) and call the LLM
+      again for an editorial review that enforces academic tone, British
+      spelling, and terminology consistency.
+
+  - id: save_output
+    description: >
+      Write the reviewed translation to the output directory using the naming
+      convention <original_stem>_translated.md.
+
+  - id: update_glossary
+    description: >
+      Scan the translated output for bilingual glosses and append any newly
+      detected terms to the terminology file, making them available for
+      subsequent files in the same run.
